@@ -287,6 +287,8 @@
     }
 
     let searchAttempts = 0;
+    let abortRetries = 0;
+    const MAX_ABORT_RETRIES = 2;
 
     function injectDOM() {
         const titleEl = findTitleElement();
@@ -387,6 +389,9 @@
             saveCache(cache);
         }
 
+        if (uri !== currentSongUri) {
+            abortRetries = 0;
+        }
         currentSongUri = uri;
         
         const cached = getFromCache(uri);
@@ -405,7 +410,16 @@
         injectDOM(); 
 
         const res = await fetchProducers(title, artist, showToast);
-        if (res.aborted) return;
+        if (res.aborted) {
+            if (abortRetries < MAX_ABORT_RETRIES) {
+                abortRetries++;
+                setTimeout(() => {
+                    if (currentSongUri === uri) update(showToast, forceRefresh);
+                }, 500);
+            }
+            return;
+        }
+        abortRetries = 0;
         
         if (currentSongUri === uri) {
             currentProducersText = res.text;
@@ -607,8 +621,10 @@
         }
     }, 500);
 
+    let songChangeDebounce;
     function onSongChange() {
-        update(false);
+        clearTimeout(songChangeDebounce);
+        songChangeDebounce = setTimeout(() => update(false), 300);
     }
     Spicetify.Player.addEventListener("songchange", onSongChange);
 
@@ -617,6 +633,7 @@
         try { observer.disconnect(); } catch (e) {}
         try { clearInterval(initInterval); } catch (e) {}
         try { clearTimeout(debounceTimer); } catch (e) {}
+        try { clearTimeout(songChangeDebounce); } catch (e) {}
         try { Spicetify.Player.removeEventListener("songchange", onSongChange); } catch (e) {}
         try { menuItem.deregister?.(); } catch (e) { console.warn("[GeniusProducers] menu cleanup failed", e); }
         try {
