@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.0
+- **Tiered Storage Engine:** Added IndexedDB and Spicetify Marketplace database persistence with automatic self-healing synchronization so access tokens never reset across Spotify/Spicetify updates.
+- **Embedded Token Fallback:** Added optional `DEFAULT_TOKEN` constant in script for permanent persistence even after full cache wipe.
+- **Settings Backup & Restore:** Added 1-click clipboard export/import in Settings UI.
+- **Unicode Smart Normalization:** Added full Unicode character support (`\p{L}`, `\p{N}`) and diacritics stripping (`À-ž`), fixing matching for Latin accents, Cyrillic, Ukrainian, and Asian scripts.
+- **Multi-Artist & Collab Matching:** Full support for collaborations, featured artists, and split artist names.
+- **Remaster & Bracket Filter Upgrade:** Refined bracket cleaning to avoid stripping legitimate track title words.
+- **Genius Metadata Fallback:** Fallback inspection of `custom_performances` when `producer_artists` is empty on Genius.
+- **Network & Throttling Fixes:** Fixed race condition when rapidly skipping tracks; guaranteed timeout clearing in `finally` block; removed broken abort retry loops; added specific HTTP 401/429 error messages.
+- **DOM & UI Polish:** Added configurable placement (Above title / Between title and artist / Below artist), text ellipsis overflow protection, and hover tooltip (`title`) showing full producer list.
+- **Cache Quota Safety:** Added try-catch and LRU half-eviction for `saveCache` to prevent `QuotaExceededError`.
+
 ## 1.0.0
 - Initial stable release.
 - Added localization (i18n) for English and Russian.

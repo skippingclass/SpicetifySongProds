@@ -33,14 +33,32 @@ To use this extension, you need a free Genius API Access Token:
 You can access the settings by clicking your profile picture and selecting **Genius Producers Settings**.
 - **Enable Extension:** Toggle the extension on or off.
 - **Disable on local files:** By default, the extension won't search for local files to avoid inaccurate matches. You can toggle this on or off.
+- **Position in Player:** Choose where to display producer credits:
+  - *Between title & artist* (Default)
+  - *Above track title*
+  - *Below artist name*
 - **Language:** Choose between English and Russian (or Auto).
-- **Genius API Access Token:** Paste your token here.
-- **Proxy URL (Optional):** If you experience CORS errors, you can provide a custom proxy URL (e.g. a Cloudflare Worker) to bypass them.
+- **Genius API Access Token:** Paste your token here. The extension utilizes a multi-tiered storage engine (IndexedDB + Spicetify Marketplace DB + LocalStorage) to keep your token safe across Spotify and Spicetify updates.
+- **Copy Backup / Restore Backup:** Export or restore your settings in one click.
+- **Proxy URL (Optional):** If your network or ISP restricts access to `genius.com`, provide a custom proxy URL.
+
+### Permanent Token Fallback (Optional)
+If you want to ensure your token is NEVER lost under any circumstances (even after formatting or wiping all browser cache):
+Open `genius-producers.js` and set your token in the `DEFAULT_TOKEN` constant near the top:
+```javascript
+const DEFAULT_TOKEN = "your_token_here";
+```
+The extension will automatically restore it into all storage tiers upon launch.
+
+## Features
+- **Strict & Smart Matching:** High accuracy matching with Unicode support for Latin accents, Cyrillic, and Asian scripts.
+- **Multi-Artist Support:** Handles collaborations, featured artists, and split artist names automatically.
+- **Self-Healing Storage:** Token and preferences are automatically synced across IndexedDB and LocalStorage.
+- **Responsive Layout:** Text ellipsis truncation with full hover tooltips prevents overflowing Spotify's player bar.
 
 ## Known Limitations
-- **Strict Matching:** The extension uses strict matching. If the track name on Spotify is significantly different from Genius (e.g., due to censorship or heavy localization), the producers will not be shown. This is intended behavior to avoid false positives.
 - **Content Types:** Does not work for podcasts or ads.
-- **Genius Data:** The extension entirely relies on Genius. If producers are missing on Genius, they won't appear in Spotify.
+- **Genius Data:** The extension relies on Genius. If producers are missing on Genius, they won't appear in Spotify.
 
 ## Troubleshooting
 - **Nothing is showing up:** 
