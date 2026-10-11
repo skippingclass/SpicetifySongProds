@@ -1,7 +1,7 @@
 // NAME: Genius Producers
-// AUTHOR: pirkov
+// AUTHOR: skippingclass
 // DESCRIPTION: Shows track producers in the Spotify player using the Genius API
-// VERSION: 1.1.0
+// VERSION: 1.1.1
 
 (function GeniusProducers() {
     if (!Spicetify.Player || !Spicetify.Platform || !Spicetify.Menu || !Spicetify.PopupModal || !Spicetify.showNotification || !Spicetify.LocalStorage) {
@@ -251,8 +251,8 @@
         }
     }
 
-    // Initialize tiered storage
-    initAndSyncConfig().catch(e => console.warn("[GeniusProducers] Config sync warning:", e));
+    // Initialize tiered storage and store promise so searches await it
+    const configReady = initAndSyncConfig().catch(e => console.warn("[GeniusProducers] Config sync warning:", e));
 
     // --- CONFIG & STATE ---
     const TITLE_SELECTORS = [
@@ -264,13 +264,11 @@
     let currentSongUri = null;
     let currentProducersText = "";
     let activeAbortController = null;
-    let lastRequestTime = 0;
 
-    // --- CACHING WITH QUOTA SAFETY ---
+    // --- CACHING (Positive Only & Sanitization) ---
     const CACHE_KEY = "genius_producers_cache";
     const MAX_CACHE_SIZE = 300;
     const CACHE_TTL = 30 * 24 * 60 * 60 * 1000; // 30 days
-    const NEGATIVE_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 days
 
     function getCache() {
         try {
@@ -297,12 +295,28 @@
         }
     }
 
+    // Sanitize cache on load: remove any empty or negative cache entries that poisoned searches
+    function sanitizeCache() {
+        try {
+            const cache = getCache();
+            let changed = false;
+            for (const [k, v] of Object.entries(cache)) {
+                if (!v || !v.text || v.negative) {
+                    delete cache[k];
+                    changed = true;
+                }
+            }
+            if (changed) saveCache(cache);
+        } catch {}
+    }
+    sanitizeCache();
+
     function getFromCache(uri) {
+        if (!uri) return null;
         const cache = getCache();
         const entry = cache[uri];
-        if (entry) {
-            const ttl = entry.negative ? NEGATIVE_CACHE_TTL : CACHE_TTL;
-            if ((Date.now() - entry.ts) < ttl) {
+        if (entry && entry.text) {
+            if ((Date.now() - entry.ts) < CACHE_TTL) {
                 return entry.text;
             } else {
                 delete cache[uri];
@@ -313,8 +327,9 @@
     }
 
     function setToCache(uri, text) {
+        if (!uri || !text) return; // Never store empty/negative entries in persistent cache
         const cache = getCache();
-        cache[uri] = { text, ts: Date.now(), negative: !text };
+        cache[uri] = { text, ts: Date.now() };
         
         const keys = Object.keys(cache);
         if (keys.length > MAX_CACHE_SIZE) {
@@ -436,7 +451,7 @@
         return false;
     }
 
-    // --- FETCHING WITH ROBUST TIMEOUT & CANCELLATION ---
+    // --- INSTANT FETCHING WITH CASCADE FALLBACKS ---
     async function fetchProducers(title, rawArtist, spotifyArtists = [], isManual = false) {
         if (!title || !rawArtist) return { text: "", error: _("noTitleOrArtist") };
 
@@ -445,66 +460,76 @@
 
         const proxyUrl = (Spicetify.LocalStorage.get("genius_producers_proxy") || "").trim();
 
-        // Cancel any in-flight request immediately BEFORE throttle wait
+        // Cancel previous request immediately with no delay
         if (activeAbortController) {
             activeAbortController.abort();
-            activeAbortController = null;
         }
-
-        // Throttling: min 1 sec between requests
-        const now = Date.now();
-        if (!isManual && now - lastRequestTime < 1000) {
-            await new Promise(resolve => setTimeout(resolve, 1000 - (now - lastRequestTime)));
-        }
-        lastRequestTime = Date.now();
-
         activeAbortController = new AbortController();
         const signal = activeAbortController.signal;
-
-        let cleanTitle = cleanBrackets(title);
-        const primaryArtist = spotifyArtists[0] || rawArtist;
-        const query = encodeURIComponent(`${cleanTitle} ${primaryArtist}`);
 
         let timeoutId = null;
         try {
             timeoutId = setTimeout(() => {
                 if (activeAbortController) activeAbortController.abort();
             }, 10000); // 10s timeout
-            
-            let searchReqUrl = `https://api.genius.com/search?q=${query}&access_token=${token}`;
-            let fetchOpts = { signal };
 
-            if (proxyUrl) {
-                searchReqUrl = `${proxyUrl}/search?q=${query}`;
-                fetchOpts.headers = { "Authorization": `Bearer ${token}` };
-            }
+            const cleanTitle = cleanBrackets(title);
+            const primaryArtist = spotifyArtists[0] || rawArtist;
 
-            const searchRes = await fetch(searchReqUrl, fetchOpts);
-            if (!searchRes.ok) {
-                if (searchRes.status === 401) return { text: "", error: _("tokenAuthError") };
-                if (searchRes.status === 429) return { text: "", error: _("rateLimitError") };
-                return { text: "", error: _("searchError", searchRes.status) };
-            }
+            // Cascade query generation:
+            // 1. Clean title + primary artist
+            // 2. Clean title alone (Genius is great at title search, and isMatchingResult filters the artist)
+            // 3. Raw title + primary artist (in case brackets were part of the song name)
+            const queries = [];
+            if (cleanTitle && primaryArtist) queries.push(`${cleanTitle} ${primaryArtist}`);
+            if (cleanTitle && cleanTitle.length > 2) queries.push(cleanTitle);
+            if (title && title !== cleanTitle && primaryArtist) queries.push(`${title} ${primaryArtist}`);
 
-            const searchData = await searchRes.json();
-            
             let matchedHit = null;
-            if (searchData.response?.hits) {
-                for (let i = 0; i < Math.min(6, searchData.response.hits.length); i++) {
-                    const hit = searchData.response.hits[i].result;
+
+            for (const q of queries) {
+                if (signal.aborted) return { text: "", error: "Aborted", aborted: true };
+
+                const encQuery = encodeURIComponent(q);
+                let searchReqUrl = `https://api.genius.com/search?q=${encQuery}&access_token=${token}`;
+                let fetchOpts = { signal };
+
+                if (proxyUrl) {
+                    searchReqUrl = `${proxyUrl}/search?q=${encQuery}`;
+                    fetchOpts.headers = { "Authorization": `Bearer ${token}` };
+                }
+
+                const searchRes = await fetch(searchReqUrl, fetchOpts);
+                if (!searchRes.ok) {
+                    if (searchRes.status === 401) return { text: "", error: _("tokenAuthError") };
+                    if (searchRes.status === 429) return { text: "", error: _("rateLimitError") };
+                    // If server error on one query, continue to next
+                    continue;
+                }
+
+                const searchData = await searchRes.json();
+                const hits = searchData.response?.hits || [];
+
+                for (let i = 0; i < hits.length; i++) {
+                    const hit = hits[i].result;
                     if (isMatchingResult(hit, title, rawArtist, spotifyArtists)) {
                         matchedHit = hit;
                         break;
                     }
                 }
+
+                if (matchedHit) break;
             }
 
             if (!matchedHit) {
                 return { text: "", error: isManual ? _("testNoMatch") : "" };
             }
 
+            if (signal.aborted) return { text: "", error: "Aborted", aborted: true };
+
             const songId = matchedHit.id;
             let songReqUrl = `https://api.genius.com/songs/${songId}?access_token=${token}`;
+            let fetchOpts = { signal };
             if (proxyUrl) {
                 songReqUrl = `${proxyUrl}/songs/${songId}`;
             }
@@ -568,21 +593,9 @@
         return null;
     }
 
-    let searchAttempts = 0;
-
     function injectDOM() {
         const titleEl = findTitleElement();
-        if (!titleEl) {
-            if (searchAttempts < 10) {
-                searchAttempts++;
-                setTimeout(injectDOM, 500);
-            } else if (searchAttempts === 10) {
-                console.warn("[GeniusProducers] Could not find track title element");
-                searchAttempts++;
-            }
-            return;
-        }
-        searchAttempts = 0;
+        if (!titleEl) return;
 
         const parent = titleEl.parentNode;
         if (!parent) return;
@@ -617,7 +630,6 @@
             if (placement === "above") {
                 parent.insertBefore(producerEl, titleEl);
             } else if (placement === "below") {
-                // Insert after artist container if found, else append to parent
                 const artistEl = parent.querySelector('.main-trackInfo-artists') || titleEl.nextSibling;
                 if (artistEl && artistEl.nextSibling) {
                     parent.insertBefore(producerEl, artistEl.nextSibling);
@@ -643,6 +655,9 @@
     }
 
     async function update(showToast = false, forceRefresh = false) {
+        // Guarantee config is synced before proceeding
+        await configReady;
+
         const isEnabled = Spicetify.LocalStorage.get("genius_producers_enabled") !== "false";
         if (!isEnabled) {
             currentProducersText = "";
@@ -683,6 +698,7 @@
             return;
         }
 
+        // If same song is still playing and producers already rendered
         if (!forceRefresh && uri === currentSongUri && currentProducersText) {
             injectDOM();
             if (showToast) Spicetify.showNotification(currentProducersText);
@@ -697,8 +713,9 @@
 
         currentSongUri = uri;
         
+        // Fast-path: valid cached producers
         const cached = getFromCache(uri);
-        if (!forceRefresh && cached !== null) {
+        if (!forceRefresh && cached) {
             currentProducersText = cached;
             injectDOM();
             if (showToast && cached) Spicetify.showNotification(cached);
@@ -714,13 +731,14 @@
 
         const res = await fetchProducers(title, rawArtist, spotifyArtists, showToast);
         if (res.aborted) {
-            // Clean exit on abort; superseded by newer request
             return;
         }
         
         if (currentSongUri === uri) {
             currentProducersText = res.text;
-            setToCache(uri, res.text);
+            if (res.text) {
+                setToCache(uri, res.text);
+            }
             injectDOM();
             if (showToast) {
                 if (res.text) {
@@ -975,10 +993,20 @@
     );
     menuItem.register();
 
-    // --- LIFECYCLE & OBSERVER ---
-    let debounceTimer;
+    // --- INSTANT LIFECYCLE & MULTI-TRIGGER DETECTION ---
+    let updateDebounce;
+    function triggerUpdate(force = false) {
+        clearTimeout(updateDebounce);
+        updateDebounce = setTimeout(() => update(false, force), 30);
+    }
+
+    // 1. Spicetify Player events (songchange & onplaypause)
+    Spicetify.Player.addEventListener("songchange", () => triggerUpdate(false));
+    Spicetify.Player.addEventListener("onplaypause", () => triggerUpdate(false));
+
+    // 2. Playbar DOM Mutation Observer
+    let lastDomTitle = "";
     const observer = new MutationObserver((mutations) => {
-        // Skip mutations caused by our own element
         let relevant = false;
         for (const m of mutations) {
             if (m.target?.id === "genius-producer-info" || m.target?.parentElement?.id === "genius-producer-info") {
@@ -989,16 +1017,22 @@
         }
         if (!relevant) return;
 
-        clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => {
-            const titleEl = findTitleElement();
-            if (titleEl) {
-                const producerEl = document.getElementById("genius-producer-info");
-                if ((!producerEl || producerEl.parentNode !== titleEl.parentNode) && currentProducersText) {
-                    injectDOM();
-                }
+        const titleEl = findTitleElement();
+        if (titleEl) {
+            const currentTitleText = (titleEl.innerText || "").trim();
+            // If DOM title text changed, song changed!
+            if (currentTitleText && currentTitleText !== lastDomTitle) {
+                lastDomTitle = currentTitleText;
+                triggerUpdate(false);
+                return;
             }
-        }, 200);
+
+            // Ensure our element stays attached if React re-rendered
+            const producerEl = document.getElementById("genius-producer-info");
+            if ((!producerEl || producerEl.parentNode !== titleEl.parentNode) && currentProducersText) {
+                injectDOM();
+            }
+        }
     });
 
     function startObserver() {
@@ -1006,28 +1040,31 @@
         observer.observe(playbar, { childList: true, subtree: true });
     }
 
+    // 3. Heartbeat monitor: guarantees no track transition is ever missed
+    const heartbeatInterval = setInterval(() => {
+        const track = getCurrentTrack();
+        if (track?.uri && track.uri !== currentSongUri) {
+            triggerUpdate(false);
+        }
+    }, 1000);
+
+    // Initial mount
     const initInterval = setInterval(() => {
         if (document.querySelector('.main-nowPlayingBar-container')) {
             clearInterval(initInterval);
             startObserver();
-            update(false);
+            triggerUpdate(false);
         }
-    }, 500);
-
-    let songChangeDebounce;
-    function onSongChange() {
-        clearTimeout(songChangeDebounce);
-        songChangeDebounce = setTimeout(() => update(false), 250);
-    }
-    Spicetify.Player.addEventListener("songchange", onSongChange);
+    }, 300);
 
     // CLEANUP EXPORT (for hot-reload testing)
     window.__geniusProducersCleanup = () => {
         try { observer.disconnect(); } catch (e) {}
         try { clearInterval(initInterval); } catch (e) {}
-        try { clearTimeout(debounceTimer); } catch (e) {}
-        try { clearTimeout(songChangeDebounce); } catch (e) {}
-        try { Spicetify.Player.removeEventListener("songchange", onSongChange); } catch (e) {}
+        try { clearInterval(heartbeatInterval); } catch (e) {}
+        try { clearTimeout(updateDebounce); } catch (e) {}
+        try { Spicetify.Player.removeEventListener("songchange", () => triggerUpdate(false)); } catch (e) {}
+        try { Spicetify.Player.removeEventListener("onplaypause", () => triggerUpdate(false)); } catch (e) {}
         try { menuItem.deregister?.(); } catch (e) { console.warn("[GeniusProducers] menu cleanup failed", e); }
         try {
             const el = document.getElementById("genius-producer-info");

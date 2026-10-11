@@ -6,7 +6,7 @@
     "main": "genius-producers.js",
     "readme": "README.md",
     "authors": [
-      { "name": "egorpirkov", "url": "https://github.com/egorpirkov" }
+      { "name": "skippingclass", "url": "https://github.com/skippingclass" }
     ],
     "tags": ["metadata", "genius", "now-playing"]
   }

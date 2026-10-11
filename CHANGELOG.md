@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.1
+- **Instant Auto-Detection:** Eliminated negative cache poisoning so songs are never permanently locked out from automatic searches.
+- **Cache Sanitization:** Automatic startup cleanup of corrupted/empty cache entries from earlier versions.
+- **Multi-Trigger Track Change:** Added listeners for `onplaypause`, DOM track title changes, and a 1-second heartbeat monitor ensuring track transitions are always caught immediately.
+- **Cascade Genius Search:** 3-phase fallback search (clean title + artist, clean title only, full title) boosting automatic match success.
+- **Zero-Latency Network Dispatch:** Removed artificial 1000ms throttling sleep and reduced debounce to 30ms for instant fetching.
+- **Author Update:** Updated author metadata to `skippingclass`.
+
 ## 1.1.0
 - **Tiered Storage Engine:** Added IndexedDB and Spicetify Marketplace database persistence with automatic self-healing synchronization so access tokens never reset across Spotify/Spicetify updates.
 - **Embedded Token Fallback:** Added optional `DEFAULT_TOKEN` constant in script for permanent persistence even after full cache wipe.
